@@ -1,0 +1,18 @@
+{
+    "Task": "Lesion and Structure Classification",
+    "Type": "Classification",
+    "Description": "Given the following medical report text, determine if the label is True or False based on whether the report mentions a lesion with size specified specifically in centimeters. If all sizes are given in mm or no sizes are present at all, output False.",
+    "Data_Path": "test.json",
+    "Input_Field": "text",
+    "Label_Field": "single_label_binary_classification_target",
+    "Parser_Format": {
+        "reasoning": {
+            "type": "str",
+            "description": "The thought process leading to the final answer."
+        },
+        "label": {
+            "type": "bool",
+            "description": "The final classification. True if a lesion with size specified in centimeters is mentioned, otherwise False."
+        }
+    }
+}

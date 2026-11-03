@@ -1,0 +1,21 @@
+{
+    "Task": "Named Entity Recognition for Medical Texts",
+    "Type": "Named Entity Recognition",
+    "Description": "The task involves identifying named entities in segmented medical text parts and classifying tokens into specific categories. Create a list of lists where each inner list contains two entries: 1. The exact sequence of text that qualifies an entity. 2. The corresponding predefined category tag (e.g., 'PREFIX', 'SYMPTOM', 'DIAGNOSIS', etc.). If no entities are present in the text, return an empty list. These categories include: PREFIX (Indicates a prefix or title in the text), SYMPTOM (Indicates a symptom entity in the text), DIAGNOSIS (Indicates a diagnosis entity in the text), STRUCTURE (Indicates a structural entity such as a measurement or object), ROMAN_NUMERAL (Indicates a Roman numeral in the text), NOTE (Indicates a note or recommendation). The task uses data provided in `test.json`, with the input field being `text` and the target label field being `named_entity_recognition_target`.",
+    "Data_Path": "test.json",
+    "Input_Field": "text",
+    "Label_Field": "named_entity_recognition_target",
+    "Parser_Format": {
+        "medical_text_parts": {
+            "type": "list",
+            "description": "The list of strings and their respective tags.",
+            "items": {
+                "type": "list",
+                "items": {
+                    "type": "str",
+                    "Optional": "True"
+                }
+            }
+        }
+    }
+}

@@ -1,0 +1,23 @@
+{
+    "Task": "Histopathology sample origin",
+    "Type": "Classification",
+    "Description": "This task involves analyzing pathology reports to classify the type of tissue described. The output should be a classification into one of three categories: Biopsy, Resection, or Excision.",
+    "Data_Path": "test.json",
+    "Input_Field": "text",
+    "Label_Field": "single_label_multi_class_classification_target",
+    "Parser_Format": {
+        "reasoning": {
+            "type": "str",
+            "description": "The thought process leading to the final answer."
+        },
+        "label": {
+            "type": "str",
+            "description": "The final classification. One of 'Biopsy', 'Resection', or 'Excision'.",
+            "literals": [
+                "Biopsy",
+                "Resection",
+                "Excision"
+            ]
+        }
+    }
+}

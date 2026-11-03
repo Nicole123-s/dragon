@@ -1,0 +1,18 @@
+{
+    "Task": "Medical Case Classification",
+    "Type": "Classification",
+    "Description": "Given the following medical report text, classify the report into one of the categories 0, 1, 2, 3, or 4 based on the number of lesions with size specified specifically in centimeters. Note that you should only count if it specifically mentions lesion and if it specifically mentions the size in centimeters and ones measured in mm do not count.",
+    "Data_Path": "test.json",
+    "Input_Field": "text",
+    "Label_Field": "single_label_multi_class_classification_target",
+    "Parser_Format": {
+        "reasoning": {
+            "type": "str",
+            "description": "The clinical reasoning or evidence leading to the classification decision, based on symptoms, measurements, and recommendations."
+        },
+        "label": {
+            "type": "int",
+            "description": "The final classification. An integer from 0 to 4, representing the number of lesions with size specified specifically in centimeters."
+        }
+    }
+}

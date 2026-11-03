@@ -286,3 +286,4 @@ yarl==1.18.3
 # The following packages are considered to be unsafe in a requirements file:
 # pip
 # setuptools
+llm_extractinator==0.4.2

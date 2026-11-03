@@ -1,0 +1,21 @@
+{
+    "Task": "Multi-Label Binary Classification for Medical Texts",
+    "Type": "Classification",
+    "Description": "The task involves classifying the words of the text which specify the size of a lesion. The lesions are numbered with roman numerals. These numerals should be converted into integers starting from 0, so I = 0, II = 1, III = 2, IV = 3, etc. Create a list of lists where each inner list contains two entries: 1. The exact sequence of text that qualifies the lesion size (e.g. '19 mm' or '2 mm'). 2. The corresponding integer. It is possible for a measurement to be referenced by multiple lesions (e.g. I+II 19 mm). You should then write down separate entries (e.g. [19 mm, I],[19 mm, II]) If no entities are present in the text, return an empty list.",
+    "Data_Path": "test.json",
+    "Input_Field": "text",
+    "Label_Field": "multi_label_binary_classification_target",
+    "Parser_Format": {
+        "lesion_sizes": {
+            "type": "list",
+            "description": "The list of strings and their lesion numbers.",
+            "items": {
+                "type": "list",
+                "items": {
+                    "type": "str",
+                    "Optional": "True"
+                }
+            }
+        }
+    }
+}

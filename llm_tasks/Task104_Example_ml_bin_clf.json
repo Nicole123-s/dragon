@@ -1,0 +1,34 @@
+{
+    "Task": "Multi-Label Binary Classification for Medical Texts",
+    "Type": "Classification",
+    "Description": "Given the following medical report text, determine a multi-label binary classification for lesions with physical size greater than 10 mm. If there is a lesion with size greater than 10 mm, the corresponding lesion field should be True; otherwise, it should be False. The report may contain up to five target lesions, each with a corresponding lesion field. If the size is not mentioned for a lesion, the corresponding lesion field should be False. It should specifically mention the word lesion and the size in millimeters for it to be considered.",
+    "Data_Path": "test.json",
+    "Input_Field": "text",
+    "Label_Field": "multi_label_binary_classification_target",
+    "Parser_Format": {
+        "reasoning": {
+            "type": "str",
+            "description": "The thought process leading to the final answer."
+        },
+        "lesion_1": {
+            "type": "bool",
+            "description": "True if the size is mentioned for the first RECIST target lesion and it is larger than 10 mm, false otherwise."
+        },
+        "lesion_2": {
+            "type": "bool",
+            "description": "True if the size is mentioned for the second RECIST target lesion and it is larger than 10 mm, false otherwise."
+        },
+        "lesion_3": {
+            "type": "bool",
+            "description": "True if the size is mentioned for the third RECIST target lesion and it is larger than 10 mm, false otherwise."
+        },
+        "lesion_4": {
+            "type": "bool",
+            "description": "True if the size is mentioned for the fourth RECIST target lesion and it is larger than 10 mm, false otherwise."
+        },
+        "lesion_5": {
+            "type": "bool",
+            "description": "True if the size is mentioned for the fifth RECIST target lesion and it is larger than 10 mm, false otherwise."
+        }
+    }
+}

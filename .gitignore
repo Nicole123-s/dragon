@@ -110,3 +110,10 @@ ENV/
 # Custom
 .DS_Store
 *.tar.gz
+
+# local training artifacts
+test-workdir/*
+!test-workdir/.gitkeep
+test-output/*
+!test-output/.gitkeep
+llm_smoke_workdir/

@@ -1,0 +1,34 @@
+{
+    "Task": "Multi-Label Regression for Medical Texts",
+    "Type": "Regression",
+    "Description": "Given the following medical report text, identify the sizes of up to 5 lesions mentioned in the report in millimeters. Use Roman numerals (I, II, III, IV, V) in the text to determine the order of the lesions. If a lesion is not present, output 0.0 for its size. Round the sizes to the nearest whole number.",
+    "Data_Path": "test.json",
+    "Input_Field": "text",
+    "Label_Field": "multi_label_regression_target",
+    "Parser_Format": {
+        "reasoning": {
+            "type": "str",
+            "description": "The thought process leading to the final answer."
+        },
+        "lesion_1": {
+            "type": "float",
+            "description": "The estimated size of the first RECIST target lesion in millimeters. If not described, set to 0.0."
+        },
+        "lesion_2": {
+            "type": "float",
+            "description": "The estimated size of the second RECIST target lesion in millimeters. If not described, set to 0.0."
+        },
+        "lesion_3": {
+            "type": "float",
+            "description": "The estimated size of the third RECIST target lesion in millimeters. If not described, set to 0.0."
+        },
+        "lesion_4": {
+            "type": "float",
+            "description": "The estimated size of the fourth RECIST target lesion in millimeters. If not described, set to 0.0."
+        },
+        "lesion_5": {
+            "type": "float",
+            "description": "The estimated size of the fifth RECIST target lesion in millimeters. If not described, set to 0.0."
+        }
+    }
+}
