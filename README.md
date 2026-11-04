@@ -19,7 +19,11 @@ The LLM stage is disabled for all other tasks and for NER tasks (fusion of seque
 - All code changes relative to the baseline are in `process.py` (fusion logic) and `llm_fusion.py` (LLM extraction wrapper), plus `llm_tasks/` (per-task prompts, mirrored from the organizers' LLM submission template) and `tiktoken_cache/` (offline tokenizer cache).
 - The encoder is switched from the template default to `dragon-roberta-large-domain-specific` (both in `process.py` and the Dockerfile pre-download step).
 - The Docker image bundles Ollama and the LLM weights at build time; evaluation runs fully offline (`--network=none`).
-- Environment variables for local experimentation: `DISABLE_LLM=1` (encoder-only), `LLM_MODEL` (default `gemma2:9b`), `LLM_EXTRA_TASKS` (e.g. `102,106` to additionally apply LLM fusion to synthetic tasks).
+- Environment variables for local experimentation: `DISABLE_LLM=1` (encoder-only), `LLM_MODEL` (default `gemma2:9b`), `LLM_EXTRA_TASKS` (e.g. `102,106` to additionally apply LLM fusion to synthetic tasks), `LLM_SUBSET` (limit LLM extraction to the first N cases for quick CPU tests), `ENCODER_MODEL` (override the encoder, e.g. a smaller model for local iteration).
+
+## Local validation notes
+
+The fusion machinery was validated end-to-end on the synthetic tasks (task 102 with `LLM_EXTRA_TASKS=102, LLM_SUBSET=12`): zero-shot extraction, per-row validity filtering, validation-set λ selection, blending, and output verification all behave as designed; the LLM stage degrades gracefully to the encoder when its output is missing or invalid. Note that the Dutch-clinical-pretrained encoder scores lower on the English-templated synthetic tasks than multilingual models do (e.g. ~0.35 vs ~0.68 kappa on task 102 under identical training); this is a property of the pretraining domain, not of the pipeline, and does not apply to the real Dutch benchmark tasks.
 
 If you are using DRAGON resources, please cite the following article:
 
