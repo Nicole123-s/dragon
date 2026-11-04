@@ -59,22 +59,27 @@ def prepare_llm_text(df: pd.DataFrame, input_name: str, task_id: str) -> pd.Seri
     return df["text_parts"].apply(lambda parts: " ".join(str(p) for p in parts))
 
 
-def parse_row(task_id: str, row: dict):
-    """解析 extractinate 的一行输出为预测值；无效（失败/非法）返回 None。"""
+def parse_row(problem_type, row: dict):
+    """按问题类型解析 extractinate 的一行输出；无效（失败/非法）返回 None。
+
+    按 problem_type 而非任务编号判断类型，任意任务（含合成任务）均可工作。
+    """
+    from dragon_baseline.nlp_algorithm import ProblemType as PT
+
     if row.get("status") != "success":
         return None
     try:
-        if task_id in BINARY_TASK_IDS:
+        if problem_type == PT.SINGLE_LABEL_BINARY_CLASSIFICATION:
             label = row.get("label")
             if label in (True, "True", "true", "1", 1):
                 return 1.0
             if label in (False, "False", "false", "0", 0):
                 return 0.0
             return None
-        if task_id in MULTICLASS_TASK_IDS:
+        if problem_type == PT.SINGLE_LABEL_MULTI_CLASS_CLASSIFICATION:
             label = row.get("label")
             return str(label) if label not in (None, "") else None
-        if task_id in ML_REGRESSION_TASK_IDS:
+        if problem_type == PT.MULTI_LABEL_REGRESSION:
             keys = ["lesion_1", "lesion_2", "lesion_3", "lesion_4", "lesion_5"]
             return [float(row[key]) for key in keys]
     except (KeyError, TypeError, ValueError):
@@ -85,6 +90,7 @@ def parse_row(task_id: str, row: dict):
 def run_llm_extraction(
     *,
     task_id: str,
+    problem_type,
     df: pd.DataFrame,
     input_name: str,
     workdir: Path,
@@ -101,6 +107,13 @@ def run_llm_extraction(
     (workdir / "data").mkdir(parents=True)
     (workdir / "tasks").mkdir(parents=True)
     (workdir / "output").mkdir(parents=True)
+
+    # 本地调试：LLM_SUBSET=30 时仅对前 30 条做 LLM 提取（生产环境勿设）
+    subset = os.environ.get("LLM_SUBSET")
+    if subset:
+        n = int(subset)
+        print(f"[llm_fusion] 本地测试模式：仅对前 {n}/{len(df)} 条做 LLM 提取")
+        df = df.head(n).copy()
 
     data = pd.DataFrame({"uid": df["uid"].astype(str).values})
     data["text"] = prepare_llm_text(df, input_name, task_id).values
@@ -140,7 +153,7 @@ def run_llm_extraction(
         rows = json.load(f)
     if len(rows) != len(df):
         print(f"[llm_fusion] 警告: LLM 输出 {len(rows)} 条 ≠ 输入 {len(df)} 条")
-    return {str(r["uid"]): parse_row(task_id, r) for r in rows}
+    return {str(r["uid"]): parse_row(problem_type, r) for r in rows}
 
 
 # ---------------- 融合函数 ----------------
@@ -158,12 +171,12 @@ def tune_lambda_binary(y_true, p_enc, q_llm) -> float:
     from sklearn.metrics import roc_auc_score
 
     best_lam, best_score = 1.0, -np.inf
-    for lam in LAMBDA_GRID:
+    for lam in sorted(LAMBDA_GRID, reverse=True):  # 并列时偏好编码器（λ 大）
         try:
             score = roc_auc_score(y_true, blend_binary(p_enc, q_llm, lam))
         except ValueError:
             continue
-        if score > best_score:
+        if score > best_score + 1e-9:
             best_score, best_lam = score, lam
     return best_lam
 
@@ -185,10 +198,10 @@ def tune_lambda_multiclass(y_true, enc_dist, classes, llm_labels, task_id: str) 
 
     weights = "linear" if task_id in LINEAR_KAPPA_TASK_IDS else None
     best_lam, best_score = 1.0, -np.inf
-    for lam in LAMBDA_GRID:
+    for lam in sorted(LAMBDA_GRID, reverse=True):  # 并列时偏好编码器
         preds = blend_multiclass(enc_dist, classes, llm_labels, lam)
         score = cohen_kappa_score(y_true, preds, weights=weights)
-        if score > best_score:
+        if score > best_score + 1e-9:
             best_score, best_lam = score, lam
     return best_lam
 
@@ -209,12 +222,12 @@ def tune_lambda_mlreg(y_true, enc_vals, llm_vals, epsilon: float) -> float:
 
     y_true = np.asarray([list(v) for v in y_true], dtype=float)
     best_lam, best_score = 1.0, -np.inf
-    for lam in LAMBDA_GRID:
+    for lam in sorted(LAMBDA_GRID, reverse=True):  # 并列时偏好编码器
         preds = blend_mlregression(enc_vals, llm_vals, lam)
         score = score_rsmape(
             y_true=y_true, y_pred=np.asarray(preds, dtype=float),
             epsilon=epsilon, ignore_missing_targets=True,
         )
-        if score > best_score:
+        if score > best_score + 1e-9:
             best_score, best_lam = score, lam
     return best_lam

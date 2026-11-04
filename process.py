@@ -23,7 +23,10 @@ class DragonSubmission(DragonBaseline):
     def __init__(self, **kwargs):
         super().__init__(**kwargs)
         # 编码器：官方最强的领域特定预训练 Large 模型（论文总分 0.819）
-        self.model_name = "joeranbosma/dragon-roberta-large-domain-specific"
+        # 本地调试可用 ENCODER_MODEL 环境变量临时换回小模型（如 dragon-roberta-base-mixed-domain）
+        self.model_name = os.environ.get(
+            "ENCODER_MODEL", "joeranbosma/dragon-roberta-large-domain-specific"
+        )
         self.per_device_train_batch_size = 4
         self.gradient_accumulation_steps = 2
         self.gradient_checkpointing = False
@@ -91,6 +94,7 @@ class DragonSubmission(DragonBaseline):
     def _extract_llm(self, task_id: str, df: pd.DataFrame) -> dict:
         return llm_fusion.run_llm_extraction(
             task_id=task_id,
+            problem_type=self.task.target.problem_type,
             df=df,
             input_name=self.task.input_name,
             workdir=self._llm_workdir(task_id, "val" if df is self.df_val else "test"),
