@@ -1,0 +1,18 @@
+{
+    "Task": "Skin histopathology case selection",
+    "Type": "Classification",
+    "Description": "This task requires evaluating radiology reports to determine if they meet exclusion criteria, such as the report being incomplete or containing an incomplete diagnosis. The output should be a binary classification: 'True' if the report matches exclusion criteria, and 'False' if it does not.",
+    "Data_Path": "test.json",
+    "Input_Field": "text",
+    "Label_Field": "single_label_binary_classification_target",
+    "Parser_Format": {
+        "reasoning": {
+            "type": "str",
+            "description": "The thought process leading to the final answer."
+        },
+        "label": {
+            "type": "bool",
+            "description": "The final classification. True if the report matches exclusion criteria, false if it does not."
+        }
+    }
+}

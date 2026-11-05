@@ -29,7 +29,8 @@ RUN python download_metrics.py
 # Download the LLM used for weak-task extraction (build-time only; runtime is offline).
 # extractinate() runs `ollama pull` at startup, which no-ops when the model is already present.
 ENV OLLAMA_MODELS=/opt/app/ollama_models
-RUN ollama serve & sleep 15 && ollama pull gemma2:9b && ollama stop gemma2:9b; pkill ollama; sleep 2; true
+# gemma2:9b for extraction, nomic-embed-text for few-shot example selection
+RUN ollama serve & sleep 15 && ollama pull gemma2:9b && ollama pull nomic-embed-text && ollama stop gemma2:9b; pkill ollama; sleep 2; true
 
 # Set the environment variables
 ENV TRANSFORMERS_OFFLINE=1

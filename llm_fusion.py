@@ -19,11 +19,16 @@ os.environ.setdefault(
     "TIKTOKEN_CACHE_DIR", str(Path(__file__).parent / "tiktoken_cache")
 )
 
-WEAK_TASK_IDS = {"006", "008", "012", "013", "014", "024"}
+WEAK_TASK_IDS = {
+    "003", "004", "006", "007", "008", "009",
+    "012", "013", "014", "016", "017", "024",
+}
 # 本地调试用：LLM_EXTRA_TASKS="102,106" 可把合成任务临时纳入弱任务（须 llm_tasks/ 有对应提示词）
 WEAK_TASK_IDS |= set(
     x for x in os.environ.get("LLM_EXTRA_TASKS", "").split(",") if x.strip()
 )
+# 少样本（few-shot）只对标量标签任务启用；结构化输出（多标签）任务保持零样本
+FEWSHOT_PROBLEM_TYPES = ("single_label_binary_classification", "single_label_multi_class_classification")
 BINARY_TASK_IDS = {"006", "008"}
 MULTICLASS_TASK_IDS = {"012", "013", "014"}
 ML_REGRESSION_TASK_IDS = {"024"}
@@ -79,11 +84,40 @@ def parse_row(problem_type, row: dict):
         if problem_type == PT.SINGLE_LABEL_MULTI_CLASS_CLASSIFICATION:
             label = row.get("label")
             return str(label) if label not in (None, "") else None
+        if problem_type == PT.MULTI_LABEL_BINARY_CLASSIFICATION:
+            keys = ["lesion_1", "lesion_2", "lesion_3", "lesion_4", "lesion_5"]
+            return [1.0 if row[key] in (True, "True", "true", 1) else 0.0 for key in keys]
+        if problem_type == PT.MULTI_LABEL_MULTI_CLASS_CLASSIFICATION:
+            if "attenuation" in row and "location" in row:
+                return [str(row["attenuation"]), str(row["location"])]
+            label = row.get("label")
+            return [str(v) for v in label] if isinstance(label, list) else None
         if problem_type == PT.MULTI_LABEL_REGRESSION:
             keys = ["lesion_1", "lesion_2", "lesion_3", "lesion_4", "lesion_5"]
             return [float(row[key]) for key in keys]
     except (KeyError, TypeError, ValueError):
         return None
+    return None
+
+
+def example_output_json(problem_type, label):
+    """把训练标签序列化为 few-shot 示例的期望输出 JSON 字符串。"""
+    import json as _json
+
+    from dragon_baseline.nlp_algorithm import ProblemType as PT
+
+    if problem_type == PT.SINGLE_LABEL_BINARY_CLASSIFICATION:
+        return _json.dumps({"reasoning": "", "label": bool(label)})
+    if problem_type == PT.SINGLE_LABEL_MULTI_CLASS_CLASSIFICATION:
+        return _json.dumps({"reasoning": "", "label": str(label)})
+    if problem_type == PT.MULTI_LABEL_BINARY_CLASSIFICATION:
+        keys = ["lesion_1", "lesion_2", "lesion_3", "lesion_4", "lesion_5"]
+        return _json.dumps({"reasoning": "", **{k: bool(v) for k, v in zip(keys, label)}})
+    if problem_type == PT.MULTI_LABEL_MULTI_CLASS_CLASSIFICATION:
+        return _json.dumps({"reasoning": "", "attenuation": str(label[0]), "location": str(label[1])})
+    if problem_type == PT.MULTI_LABEL_REGRESSION:
+        keys = ["lesion_1", "lesion_2", "lesion_3", "lesion_4", "lesion_5"]
+        return _json.dumps({"reasoning": "", **{k: float(v) for k, v in zip(keys, label)}})
     return None
 
 
@@ -96,9 +130,13 @@ def run_llm_extraction(
     workdir: Path,
     model_name: str,
     num_predict: int = 512,
+    train_df: pd.DataFrame = None,
+    num_examples: int = 0,
+    label_name: str = None,
 ) -> dict:
-    """对给定数据运行零样本 LLM 提取，返回 {uid: 预测值或 None}。
+    """对给定数据运行 LLM 提取（零样本或少样本），返回 {uid: 预测值或 None}。
 
+    num_examples>0 时从训练集选取相似示例注入提示词（few-shot），
     复用 llm_extractinator 的提示词、结构化输出与失败重试机制。
     """
     workdir = Path(workdir)
@@ -122,14 +160,38 @@ def run_llm_extraction(
     task_jsons = list(LLM_TASK_DIR.glob(f"Task{task_id}_*.json"))
     if not task_jsons:
         raise FileNotFoundError(f"llm_tasks/ 下找不到 Task{task_id} 的提示词 JSON")
-    shutil.copy(task_jsons[0], workdir / "tasks" / task_jsons[0].name)
+    task_json_dest = workdir / "tasks" / task_jsons[0].name
+    shutil.copy(task_jsons[0], task_json_dest)
+
+    example_dir = workdir / "examples"
+    if num_examples > 0 and train_df is not None and len(train_df) > 0 and label_name:
+        # 构造 few-shot 示例库：input=报告文本, output=期望 JSON 输出
+        examples = pd.DataFrame({
+            "text": prepare_llm_text(train_df, input_name, task_id).values,
+            "input": prepare_llm_text(train_df, input_name, task_id).values,
+        })
+        examples["output"] = [
+            example_output_json(problem_type, row[label_name])
+            for _, row in train_df.iterrows()
+        ]
+        examples = examples[examples["output"].notna()]
+        example_dir.mkdir(parents=True, exist_ok=True)
+        examples.to_json(example_dir / "train.json", orient="records")
+        # 在任务配置里声明示例路径（TaskRunner 据此加载）
+        task_cfg = json.load(open(task_json_dest))
+        task_cfg["Example_Path"] = "train.json"
+        json.dump(task_cfg, open(task_json_dest, "w"), indent=4)
+        print(f"[llm_fusion] few-shot 模式：{num_examples} 个示例（示例库 {len(examples)} 条）")
+    else:
+        num_examples = 0
+        example_dir.mkdir(parents=True, exist_ok=True)
 
     from llm_extractinator import extractinate
 
     extractinate(
         task_id=int(task_id),
         model_name=model_name,
-        num_examples=0,
+        num_examples=num_examples,
         temperature=0.0,
         max_context_len="split",
         num_predict=num_predict,
@@ -137,6 +199,7 @@ def run_llm_extraction(
         data_dir=workdir / "data",
         output_dir=workdir / "output",
         task_dir=workdir / "tasks",
+        example_dir=example_dir,
         n_runs=1,
         verbose=False,
         run_name="run",
@@ -171,13 +234,19 @@ def tune_lambda_binary(y_true, p_enc, q_llm) -> float:
     from sklearn.metrics import roc_auc_score
 
     best_lam, best_score = 1.0, -np.inf
+    enc_score = None
     for lam in sorted(LAMBDA_GRID, reverse=True):  # 并列时偏好编码器（λ 大）
         try:
             score = roc_auc_score(y_true, blend_binary(p_enc, q_llm, lam))
         except ValueError:
             continue
+        if lam == 1.0:
+            enc_score = score
         if score > best_score + 1e-9:
             best_score, best_lam = score, lam
+    # 收缩保护：LLM 混合必须明显优于纯编码器，否则回退 λ=1
+    if best_lam != 1.0 and enc_score is not None and best_score <= enc_score + 0.002:
+        return 1.0
     return best_lam
 
 
@@ -198,11 +267,17 @@ def tune_lambda_multiclass(y_true, enc_dist, classes, llm_labels, task_id: str) 
 
     weights = "linear" if task_id in LINEAR_KAPPA_TASK_IDS else None
     best_lam, best_score = 1.0, -np.inf
+    enc_score = None
     for lam in sorted(LAMBDA_GRID, reverse=True):  # 并列时偏好编码器
         preds = blend_multiclass(enc_dist, classes, llm_labels, lam)
         score = cohen_kappa_score(y_true, preds, weights=weights)
+        if lam == 1.0:
+            enc_score = score
         if score > best_score + 1e-9:
             best_score, best_lam = score, lam
+    # 收缩保护
+    if best_lam != 1.0 and enc_score is not None and best_score <= enc_score + 0.002:
+        return 1.0
     return best_lam
 
 
@@ -222,12 +297,76 @@ def tune_lambda_mlreg(y_true, enc_vals, llm_vals, epsilon: float) -> float:
 
     y_true = np.asarray([list(v) for v in y_true], dtype=float)
     best_lam, best_score = 1.0, -np.inf
+    enc_score = None
     for lam in sorted(LAMBDA_GRID, reverse=True):  # 并列时偏好编码器
         preds = blend_mlregression(enc_vals, llm_vals, lam)
         score = score_rsmape(
             y_true=y_true, y_pred=np.asarray(preds, dtype=float),
             epsilon=epsilon, ignore_missing_targets=True,
         )
+        if lam == 1.0:
+            enc_score = score
+        if score > best_score + 1e-9:
+            best_score, best_lam = score, lam
+    # 收缩保护
+    if best_lam != 1.0 and enc_score is not None and best_score <= enc_score + 0.002:
+        return 1.0
+    return best_lam
+
+
+def blend_mlmc(enc_labels, llm_labels, lam: float) -> list:
+    """多标签多分类：lambda 作为来源开关（>=0.5 用编码器标签，否则用 LLM 标签）。
+
+    编码器不输出概率时这是无分布信息的退化融合；LLM 无效位置回退编码器。
+    """
+    out = []
+    for enc, llm in zip(enc_labels, llm_labels):
+        merged = []
+        for e, l in zip(enc, llm if llm is not None else [None] * len(enc)):
+            if l is None:
+                merged.append(e)
+            else:
+                merged.append(e if lam >= 0.5 else l)
+        out.append(merged)
+    return out
+
+
+def tune_lambda_mlmc(y_true, enc_labels, llm_labels, task_id: str) -> float:
+    """按官方 kappa（各标签列取均值）在验证集选择来源开关。"""
+    from sklearn.metrics import cohen_kappa_score
+
+    weights = "linear" if task_id in LINEAR_KAPPA_TASK_IDS else None
+    n_elems = len(enc_labels.iloc[0] if hasattr(enc_labels, "iloc") else enc_labels[0])
+    best_lam, best_score = 1.0, -np.inf
+    for lam in sorted(LAMBDA_GRID, reverse=True):  # 并列时偏好编码器
+        preds = blend_mlmc(enc_labels, llm_labels, lam)
+        scores = []
+        for j in range(n_elems):
+            y_t = [str(v[j]) for v in y_true]
+            y_p = [str(v[j]) for v in preds]
+            scores.append(cohen_kappa_score(y_t, y_p, weights=weights))
+        score = float(np.mean(scores))
+        if score > best_score + 1e-9:
+            best_score, best_lam = score, lam
+    return best_lam
+
+
+def tune_lambda_mlbinary(y_true, enc_vals, llm_vals) -> float:
+    """多标签二分类（T16）：各 lesion 列 AUC 取均值。"""
+    from sklearn.metrics import roc_auc_score
+
+    y_true = np.asarray([list(v) for v in y_true], dtype=float)
+    n_elems = y_true.shape[1]
+    best_lam, best_score = 1.0, -np.inf
+    for lam in sorted(LAMBDA_GRID, reverse=True):  # 并列时偏好编码器
+        preds = np.asarray(blend_mlregression(enc_vals, llm_vals, lam), dtype=float)
+        scores = []
+        for j in range(n_elems):
+            try:
+                scores.append(roc_auc_score(y_true[:, j], preds[:, j]))
+            except ValueError:
+                scores.append(0.5)
+        score = float(np.mean(scores))
         if score > best_score + 1e-9:
             best_score, best_lam = score, lam
     return best_lam
