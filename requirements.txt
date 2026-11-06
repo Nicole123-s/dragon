@@ -287,6 +287,3 @@ yarl==1.18.3
 # pip
 # setuptools
 llm_extractinator==0.4.2
-langchain==0.3.25
-langchain-ollama==0.3.3
-langchain-chroma==0.2.3

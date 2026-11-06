@@ -1,7 +1,3 @@
 dragon_baseline==0.4.1
 dragon_eval==0.2.4
 llm_extractinator==0.4.2
-# llm_extractinator 0.4.2 requires the langchain 0.3 line (langchain 1.x removed langchain.globals)
-langchain==0.3.25
-langchain-ollama==0.3.3
-langchain-chroma==0.2.3

@@ -38,8 +38,6 @@ class DragonSubmission(DragonBaseline):
         self.llm_enabled = os.environ.get("DISABLE_LLM", "0") != "1"
         self.llm_model = os.environ.get("LLM_MODEL", "gemma2:9b")
         self.llm_num_predict = int(os.environ.get("LLM_NUM_PREDICT", "512"))
-        # 少样本示例数：仅对标量标签任务（二分类/多分类）启用
-        self.llm_num_examples = int(os.environ.get("LLM_NUM_EXAMPLES", "3"))
         self._llm_lambda = None  # 验证集上选出的融合权重（编码器权重）
 
     def custom_text_cleaning(self, text: Union[str, List[str]]) -> Union[str, List[str]]:
@@ -87,8 +85,6 @@ class DragonSubmission(DragonBaseline):
         return self.task.target.problem_type in (
             ProblemType.SINGLE_LABEL_BINARY_CLASSIFICATION,
             ProblemType.SINGLE_LABEL_MULTI_CLASS_CLASSIFICATION,
-            ProblemType.MULTI_LABEL_BINARY_CLASSIFICATION,
-            ProblemType.MULTI_LABEL_MULTI_CLASS_CLASSIFICATION,
             ProblemType.MULTI_LABEL_REGRESSION,
         )
 
@@ -96,13 +92,6 @@ class DragonSubmission(DragonBaseline):
         return Path(self.model_save_dir).parent / "llm" / f"task{task_id}_{split}"
 
     def _extract_llm(self, task_id: str, df: pd.DataFrame) -> dict:
-        # 少样本仅对标量标签任务启用（结构化输出任务保持零样本）
-        problem_type_str = self.task.target.problem_type.value
-        num_examples = (
-            self.llm_num_examples
-            if problem_type_str in llm_fusion.FEWSHOT_PROBLEM_TYPES
-            else 0
-        )
         return llm_fusion.run_llm_extraction(
             task_id=task_id,
             problem_type=self.task.target.problem_type,
@@ -111,9 +100,6 @@ class DragonSubmission(DragonBaseline):
             workdir=self._llm_workdir(task_id, "val" if df is self.df_val else "test"),
             model_name=self.llm_model,
             num_predict=self.llm_num_predict,
-            train_df=self.df_train,
-            num_examples=num_examples,
-            label_name=self.task.target.label_name,
         )
 
     def _predict_encoder_distribution(self, df: pd.DataFrame):
@@ -161,16 +147,6 @@ class DragonSubmission(DragonBaseline):
             lam = llm_fusion.tune_lambda_multiclass(
                 y_true.astype(str), enc_dist, classes, llm_labels, task_id
             )
-        elif self.task.target.problem_type == ProblemType.MULTI_LABEL_BINARY_CLASSIFICATION:
-            enc_val = super().predict(df=self.df_val)
-            enc_vals = enc_val.set_index(enc_val["uid"].astype(str)).loc[uids, pred_name]
-            llm_vals = [llm_val.get(u) for u in uids]
-            lam = llm_fusion.tune_lambda_mlbinary(y_true, enc_vals, llm_vals)
-        elif self.task.target.problem_type == ProblemType.MULTI_LABEL_MULTI_CLASS_CLASSIFICATION:
-            enc_val = super().predict(df=self.df_val)
-            enc_labels = enc_val.set_index(enc_val["uid"].astype(str)).loc[uids, pred_name]
-            llm_labels = [llm_val.get(u) for u in uids]
-            lam = llm_fusion.tune_lambda_mlmc(y_true, enc_labels, llm_labels, task_id)
         else:  # MULTI_LABEL_REGRESSION
             enc_val = super().predict(df=self.df_val)
             enc_vals = enc_val.set_index(enc_val["uid"].astype(str)).loc[uids, pred_name]
@@ -197,17 +173,10 @@ class DragonSubmission(DragonBaseline):
             _, classes, enc_dist = self._predict_encoder_distribution(df)
             llm_labels = [llm_pred.get(u) for u in uids]
             out[pred_name] = llm_fusion.blend_multiclass(enc_dist, classes, llm_labels, lam)
-        elif self.task.target.problem_type in (
-            ProblemType.MULTI_LABEL_BINARY_CLASSIFICATION,
-            ProblemType.MULTI_LABEL_REGRESSION,
-        ):
+        else:  # MULTI_LABEL_REGRESSION
             enc_vals = out[pred_name].values
             llm_vals = [llm_pred.get(u) for u in uids]
             out[pred_name] = llm_fusion.blend_mlregression(enc_vals, llm_vals, lam)
-        elif self.task.target.problem_type == ProblemType.MULTI_LABEL_MULTI_CLASS_CLASSIFICATION:
-            enc_labels = out[pred_name].values
-            llm_labels = [llm_pred.get(u) for u in uids]
-            out[pred_name] = llm_fusion.blend_mlmc(enc_labels, llm_labels, lam)
         return out
 
     def predict(self, *, df: pd.DataFrame) -> pd.DataFrame:
