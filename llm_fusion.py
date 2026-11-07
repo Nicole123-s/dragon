@@ -19,7 +19,7 @@ os.environ.setdefault(
     "TIKTOKEN_CACHE_DIR", str(Path(__file__).parent / "tiktoken_cache")
 )
 
-WEAK_TASK_IDS = {"006", "008", "012", "013", "014", "024"}
+WEAK_TASK_IDS = {"003", "006", "008", "012", "013", "014", "024", "103"}
 # 本地调试用：LLM_EXTRA_TASKS="102,106" 可把合成任务临时纳入弱任务（须 llm_tasks/ 有对应提示词）
 WEAK_TASK_IDS |= set(
     x for x in os.environ.get("LLM_EXTRA_TASKS", "").split(",") if x.strip()
@@ -52,7 +52,7 @@ def prepare_llm_text(df: pd.DataFrame, input_name: str, task_id: str) -> pd.Seri
     """
     if input_name == "text":
         return df["text"].astype(str)
-    if task_id == "014":
+    if task_id in ("014", "103"):  # NLI 句对任务：两个句子分开标注
         return df["text_parts"].apply(
             lambda parts: "Sentence 1: " + parts[0] + "\n\nSentence 2: " + parts[1]
         )

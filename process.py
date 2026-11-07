@@ -63,12 +63,12 @@ class DragonSubmission(DragonBaseline):
             return [self.custom_text_cleaning(t) for t in text]
 
     def preprocess(self):
-        # Example of how to adapt the DRAGON baseline to use a different preprocessing function
+        # Enable the template's custom text cleaning (remove HTML tags and URLs)
+        # before the common-prefix removal, so models focus on the clinical content.
         super().preprocess()
 
-        # Uncomment the following lines to use the custom_text_cleaning function
-        # for df in [self.df_train, self.df_val, self.df_test]:
-        #     df[self.task.input_name] = df[self.task.input_name].map(self.custom_text_cleaning)
+        for df in [self.df_train, self.df_val, self.df_test]:
+            df[self.task.input_name] = df[self.task.input_name].map(self.custom_text_cleaning)
 
     # ---------------- LLM 融合 ----------------
 

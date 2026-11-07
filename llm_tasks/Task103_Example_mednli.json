@@ -1,0 +1,23 @@
+{
+    "Task": "Natural Language Inference for Medical Texts",
+    "Type": "Classification",
+    "Description": "The task consists of classifying pairs of medical statements based on their semantic relationship into predefined categories: entailment, contradiction, or neutral. This involves determining whether the hypothesis logically follows from, contradicts, or is unrelated to the premise.",
+    "Data_Path": "test.json",
+    "Input_Field": "text",
+    "Label_Field": "single_label_multi_class_classification_target",
+    "Parser_Format": {
+        "reasoning": {
+            "type": "str",
+            "description": "The reasoning used to infer the relationship between the premise and the hypothesis based on clinical knowledge and context."
+        },
+        "label": {
+            "type": "str",
+            "description": "The classification label corresponding to the semantic relationship: entailment, contradiction, or neutral.",
+            "literals": [
+                "entailment",
+                "contradiction",
+                "neutral"
+            ]
+        }
+    }
+}
