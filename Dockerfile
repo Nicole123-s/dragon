@@ -19,6 +19,10 @@ RUN python -m pip install --user -U pip && python -m pip install --user pip-tool
 # Install the requirements
 COPY --chown=user:user requirements.txt .
 RUN python -m pip install --user -r requirements.txt
+# Enforce langchain 0.3 after dependency resolution: llm_extractinator 0.4.2 imports
+# langchain.globals, which only exists in langchain 0.3.x (1.x removed it and breaks at runtime).
+# Without this line the resolver may pick langchain 1.x and the LLM stage fails at runtime.
+RUN python -m pip install --user "langchain==0.3.25" "langchain-ollama==0.3.3" "langchain-chroma==0.2.3"
 
 # Download the encoder model, tokenizer and metrics
 COPY --chown=user:user download_model.py .
