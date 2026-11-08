@@ -150,35 +150,72 @@ def _ollama_selfcheck(*, workdir: Path, model_name: str) -> None:
 
 
 def _dump_server_logs(workdir: Path, *, srv_log_path: Path) -> None:
-    """打印自检服务与 extractinate 服务的日志尾部（提取后可见请求时序）。"""
+    """打印提取全过程的日志尾部：自检服务、子进程 stdout/stderr、extractinate 日志、其管理的 ollama 服务。"""
     for name, path in [
         ("selfcheck", srv_log_path),
+        ("child-stdout", Path(workdir) / "child_stdout.log"),
+        ("child-stderr", Path(workdir) / "child_stderr.log"),
+        ("task_runner", Path(workdir) / "output" / "logs" / "task_runner.log"),
         ("extraction", Path(workdir) / "output" / "logs" / "ollama_server.log"),
     ]:
         try:
-            tail = open(path, errors="replace").read()[-1500:]
-            print(f"----- ollama {name} server log tail -----")
+            tail = open(path, errors="replace").read()[-2000:]
+            print(f"----- {name} log tail ({path}) -----")
             print(tail)
             print("----- end -----")
         except Exception:
             pass
 
 
-def _extractinate_child(kwargs: dict, result_queue) -> None:
-    """extractinate 的子进程入口（spawn 需要模块级函数）。"""
+def _extractinate_child(kwargs: dict, result_queue, log_path: str) -> None:
+    """extractinate 的子进程入口（spawn 需要模块级函数）。
+
+    - stdout/stderr 重定向到文件：避免 GC 日志管道阻塞导致整个子进程卡死（v1.2.8/1.2.9 疑似根因之一），
+      同时完整留证，结束后由父进程打印尾部
+    - faulthandler 每 3 分钟把所有线程栈打到 stderr：若再挂，日志里直接看到挂在哪一行
+    - 跳过运行时 ollama pull：模型已烤入镜像，pull 是纯网络依赖（GC 出口受限时会挂死）
+    """
+    import faulthandler
+    import sys
+
+    sys.stdout = open(log_path, "w", encoding="utf-8", errors="replace", buffering=1)
+    sys.stderr = open(
+        str(log_path) + ".err", "w", encoding="utf-8", errors="replace", buffering=1
+    )
+    faulthandler.dump_traceback_later(180, repeat=True, file=sys.stderr)
+    print("[llm_fusion.child] 子进程启动", flush=True)
     try:
+        import logging as _logging
+
+        from llm_extractinator.ollama_server import OllamaServerManager
+
+        def _skip_pull(self, model_name):
+            _logging.getLogger(__name__).info(
+                f"[llm_fusion] 跳过运行时 ollama pull（模型已内置镜像）: {model_name}"
+            )
+
+        OllamaServerManager.pull_model = _skip_pull
+
+        _patch_predictor_concurrency()  # spawn 子进程是全新解释器，父进程的补丁不会带过来
+
         from llm_extractinator import extractinate
 
         extractinate(**kwargs)
+        print("[llm_fusion.child] extractinate 返回", flush=True)
         result_queue.put(("ok", None))
     except Exception as e:  # noqa: BLE001
         result_queue.put(("err", repr(e)))
 
 
 def _patch_predictor_concurrency() -> None:
-    """给 extractinate 的 Predictor.predict 注入 max_concurrency（顺序推理在 1h 上限内跑不完大任务）。
+    """替换 extractinate 的 Predictor.predict：并发 + 健壮解析（本函数是关键修复）。
 
-    与 llm_extractinator 0.4.2 原版逻辑一致，仅在 chain.batch 的 config 中增加并发度。
+    原版 chain = prompt | model | OutputFixingParser，有两个实测问题：
+    1. 模型会照抄提示词里的 JSON schema 外壳（输出 {"properties": {...}, "required": [...]}），
+       pydantic 解析必失败；OutputFixingParser 再用 LLM 重试 3 次，同样失败，
+       且每次失败多花 3 次 LLM 调用（40 条样本就是 160 次）。
+    2. 无并发参数时顺序推理跑不完。
+    新版：prompt | model 后自行解析——标准解析 → 剥 "properties" 外壳 → 失败记 failure。
     """
     from llm_extractinator.callbacks import BatchCallBack
     from llm_extractinator.predictor import Predictor
@@ -187,9 +224,14 @@ def _patch_predictor_concurrency() -> None:
     max_concurrency = int(os.environ.get("LLM_MAX_CONCURRENCY", "4"))
 
     def predict(self, test_data):
+        import json as _json
+
         logger_src = logging.getLogger(__name__)
-        logger_src.info("Starting prediction on test data with %d samples (max_concurrency=%d).", len(test_data), max_concurrency)
-        chain = self.prompt | self.model | self.fixing_parser
+        logger_src.info(
+            "Starting prediction on test data with %d samples (max_concurrency=%d, robust-parser).",
+            len(test_data), max_concurrency,
+        )
+        chain = self.prompt | self.model
         test_data_processed = [
             {"input": row[self.input_field]} for _, row in test_data.iterrows()
         ]
@@ -201,18 +243,72 @@ def _patch_predictor_concurrency() -> None:
         )
         callbacks.progress_bar.close()
 
+        def robust_parse(text: str):
+            # 1) 标准 pydantic JSON 解析
+            try:
+                return self.base_parser.parse(text)
+            except Exception:
+                pass
+            # 2) 模型照抄 schema 外壳：{"properties": {"reasoning": ..., "label": ...}, "required": [...]}
+            try:
+                obj = _json.loads(text)
+                inner = obj.get("properties") if isinstance(obj, dict) else None
+                if isinstance(inner, dict):
+                    return self.parser_model.model_validate(inner)
+            except Exception:
+                pass
+            # 3) 逐字段正则提取（外壳套得更深时，原始值通常仍原样出现在文本里）
+            try:
+                extracted = {}
+                for fname, fdef in self.parser_model.model_fields.items():
+                    ann = fdef.annotation
+                    is_num = ann in (int, float) or getattr(ann, "__args__", None) and any(
+                        a in (int, float) for a in ann.__args__
+                    )
+                    if is_num:
+                        m = re.search(rf'"{fname}"\s*:\s*(-?[\d.]+)', text)
+                        if m:
+                            extracted[fname] = float(m.group(1)) if "." in m.group(1) else int(m.group(1))
+                    else:
+                        m = re.search(rf'"{fname}"\s*:\s*"((?:[^"\\]|\\.)*)"', text)
+                        if m:
+                            extracted[fname] = m.group(1)
+                if extracted:
+                    return self.parser_model.model_validate(extracted)
+            except Exception:
+                pass
+            return None
+
         final_results = []
         failure_counter = 0
         for input_data, result in zip(test_data_processed, raw_results):
             if isinstance(result, Exception):
+                failure_counter += 1
+                if failure_counter <= 5:
+                    logger_src.warning(
+                        "LLM call failed (sample %.60r): %r",
+                        input_data.get("input", ""), result,
+                    )
                 final_results.append(
                     handle_prediction_failure(result, input_data, self.parser_model)
                 )
+                continue
+            text = result.content if hasattr(result, "content") else str(result)
+            obj = robust_parse(text)
+            if obj is None:
                 failure_counter += 1
-            else:
-                result_dict = (
-                    result.model_dump() if hasattr(result, "model_dump") else result
+                if failure_counter <= 5:
+                    logger_src.warning(
+                        "LLM output unparseable (sample %.60r): %.1200r",
+                        input_data.get("input", ""), text,
+                    )
+                final_results.append(
+                    handle_prediction_failure(
+                        ValueError("unparseable LLM output"), input_data, self.parser_model
+                    )
                 )
+            else:
+                result_dict = obj.model_dump() if hasattr(obj, "model_dump") else obj
                 result_dict["status"] = "success"
                 final_results.append(result_dict)
 
@@ -297,9 +393,21 @@ def run_llm_extraction(
     budget_min = float(os.environ.get("LLM_TIME_BUDGET_MIN", "40"))
     ctx = mp.get_context("spawn")
     result_queue = ctx.Queue()
-    proc = ctx.Process(target=_extractinate_child, args=(kwargs, result_queue))
+    child_log = workdir / "child_stdout.log"
+    proc = ctx.Process(
+        target=_extractinate_child, args=(kwargs, result_queue, str(child_log))
+    )
     proc.start()
-    proc.join(timeout=int(budget_min * 60))
+    deadline = _time.time() + budget_min * 60
+    next_beat = _time.time() + 300
+    while proc.is_alive() and _time.time() < deadline:
+        proc.join(timeout=30)
+        if _time.time() >= next_beat and proc.is_alive():
+            print(
+                f"[llm_fusion] 提取进行中... 已等待 {(_time.time() - (deadline - budget_min * 60)) / 60:.0f} 分钟",
+                flush=True,
+            )
+            next_beat = _time.time() + 300
     status, err = ("err", "child exited without result"), None
     if proc.is_alive():
         print(f"[llm_fusion] 提取超时（>{budget_min:.0f} 分钟），终止 LLM 子进程并回退编码器")
