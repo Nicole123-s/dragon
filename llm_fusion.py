@@ -88,6 +88,45 @@ def parse_row(problem_type, row: dict):
     return None
 
 
+def _ollama_selfcheck(*, workdir: Path, model_name: str) -> None:
+    """环境自检：ollama 可用性 + 一次真实生成计时 + 服务端日志（GPU/CPU 判别）。
+
+    提取前运行：起服务 → 单次生成 → 打印耗时与服务日志尾部。
+    服务保持运行（extractinate 会再启动一个实例，端口占用无妨，请求仍路由到本服务）。
+    """
+    import shutil as _shutil
+    import subprocess as _sp
+    import time as _time
+
+    print(f"[llm_fusion] SELFCHECK ollama binary: {_shutil.which('ollama')}")
+    srv_log_path = workdir / "ollama_selfcheck.log"
+    srv_log = open(srv_log_path, "w")
+    srv = _sp.Popen(["ollama", "serve"], stdout=srv_log, stderr=_sp.STDOUT)
+    _time.sleep(10)
+    try:
+        t0 = _time.time()
+        r = _sp.run(
+            ["ollama", "run", model_name, "Reply with exactly: OK"],
+            capture_output=True, text=True, timeout=420,
+            env={**os.environ, "OLLAMA_NO_UPDATE": "1"},
+        )
+        dt = _time.time() - t0
+        print(f"[llm_fusion] SELFCHECK generate took {dt:.1f}s  (<30s≈GPU, >60s≈CPU)")
+        print(f"[llm_fusion] SELFCHECK output: {r.stdout[:80]!r}")
+        if r.returncode != 0:
+            print(f"[llm_fusion] SELFCHECK stderr: {r.stderr[-500:]!r}")
+    except Exception as e:
+        print(f"[llm_fusion] SELFCHECK FAILED: {e}")
+    try:
+        srv_log.close()
+        tail = open(srv_log_path, errors="replace").read()[-1500:]
+        print("----- ollama server log tail -----")
+        print(tail)
+        print("----- end -----")
+    except Exception:
+        pass
+
+
 def _patch_predictor_concurrency() -> None:
     """给 extractinate 的 Predictor.predict 注入 max_concurrency（顺序推理在 1h 上限内跑不完大任务）。
 
@@ -179,6 +218,7 @@ def run_llm_extraction(
         raise FileNotFoundError(f"llm_tasks/ 下找不到 Task{task_id} 的提示词 JSON")
     shutil.copy(task_jsons[0], workdir / "tasks" / task_jsons[0].name)
 
+    _ollama_selfcheck(workdir=workdir, model_name=model_name)
     _patch_predictor_concurrency()
     print(f"[llm_fusion] 提取开始：task={task_id} model={model_name} num_predict={num_predict} 条数={len(df)}")
 
