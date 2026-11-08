@@ -14,10 +14,18 @@ RUN apt-get update \
 # which the binary resolves relative to /usr/local.
 RUN --mount=type=bind,from=ollama/ollama:0.40.14,source=/,target=/ollama_img \
     mkdir -p /usr/local/lib/ollama \
-    && (cp -r /ollama_img/usr/local/lib/ollama/. /usr/local/lib/ollama/ 2>/dev/null || true) \
+    && echo "=== ollama image: relevant paths ===" \
+    && (ls -laR /ollama_img/usr/local/lib/ollama 2>/dev/null | head -60 || echo "no /usr/local/lib/ollama") \
+    && (ls -laR /ollama_img/usr/lib/ollama 2>/dev/null | head -60 || echo "no /usr/lib/ollama") \
+    && (cp -a /ollama_img/usr/local/lib/ollama/. /usr/local/lib/ollama/ 2>/dev/null || true) \
+    && (cp -a /ollama_img/usr/lib/ollama/. /usr/local/lib/ollama/ 2>/dev/null || true) \
     && (cp /ollama_img/usr/local/bin/ollama /usr/local/bin/ollama 2>/dev/null \
         || cp /ollama_img/bin/ollama /usr/local/bin/ollama) \
     && chmod 755 /usr/local/bin/ollama \
+    && echo "=== installed ===" \
+    && find /usr/local/lib/ollama -maxdepth 3 | head -60 \
+    && echo "=== llama-server check ===" \
+    && find /usr/local/lib/ollama -name "llama-server" -type f | grep . \
     && ollama --version
 
 RUN groupadd -r user && useradd -m --no-log-init -r -g user user
