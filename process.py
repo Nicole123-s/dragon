@@ -197,6 +197,9 @@ class DragonSubmission(DragonBaseline):
             llm_pred = self._extract_llm(task_id, df)
             n_valid = sum(v is not None for v in llm_pred.values())
             print(f"[llm_fusion] task={task_id} model={self.llm_model} λ={lam} LLM 有效 {n_valid}/{len(df)}")
+            if n_valid == 0:
+                print("[llm_fusion] LLM 无有效预测，直接用编码器结果")
+                return encoder_pred
             return self._blend(task_id, df, encoder_pred, llm_pred, lam)
         except Exception as e:
             print(f"[llm_fusion] LLM 提取失败，回退纯编码器结果: {e}")
