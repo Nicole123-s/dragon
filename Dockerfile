@@ -1,22 +1,24 @@
+# syntax=docker/dockerfile:1
 FROM pytorch/pytorch:2.6.0-cuda12.4-cudnn9-runtime
 
-# The pytorch runtime image ships WITHOUT curl/wget. This line is easy to miss
-# and fatal: `curl | sh` then no-ops with exit 0, producing an image that
-# silently lacks ollama. (Same install line as the organizers' LLM template.)
+# The pytorch runtime image ships WITHOUT curl/wget (easy to miss and fatal:
+# `curl | sh` then no-ops with exit 0). Ubuntu archive is on GC's egress allowlist.
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends curl wget ca-certificates \
+    && apt-get install -y --no-install-recommends curl ca-certificates \
     && rm -rf /var/lib/apt/lists/*
 
-# Install the Ollama server. GC build egress is allowlisted and flaky, so try
-# several sources and VERIFY the binary exists.
-RUN set -e; \
-    if curl -fsSL --max-time 180 -o /tmp/ollama_install.sh https://ollama.com/install.sh && sh /tmp/ollama_install.sh; then \
-        echo "ollama installed via ollama.com"; \
-    else \
-        curl -fL --retry 3 --max-time 900 -o /tmp/ollama.tgz https://github.com/ollama/ollama/releases/download/v0.40.14/ollama-linux-amd64.tgz && \
-        tar xzf /tmp/ollama.tgz -C /usr/local && rm -f /tmp/ollama.tgz && echo "ollama installed via GitHub releases"; \
-    fi; \
-    command -v ollama && ollama --version
+# Ollama server binary, copied from the official image on Docker Hub.
+# GC build egress blocks ollama.com and github.com (504 via their proxy) but
+# allows docker.io, PyPI, ubuntu archives and registry.ollama.ai.
+# The ollama image ships the binary plus its runner libraries (ggml runners),
+# which the binary resolves relative to /usr/local.
+RUN --mount=type=bind,from=ollama/ollama:0.40.14,source=/,target=/ollama_img \
+    mkdir -p /usr/local/lib/ollama \
+    && (cp -r /ollama_img/usr/local/lib/ollama/. /usr/local/lib/ollama/ 2>/dev/null || true) \
+    && (cp /ollama_img/usr/local/bin/ollama /usr/local/bin/ollama 2>/dev/null \
+        || cp /ollama_img/bin/ollama /usr/local/bin/ollama) \
+    && chmod 755 /usr/local/bin/ollama \
+    && ollama --version
 
 RUN groupadd -r user && useradd -m --no-log-init -r -g user user
 
@@ -36,7 +38,6 @@ COPY --chown=user:user requirements.txt .
 RUN python -m pip install --user -r requirements.txt
 # Enforce langchain 0.3 after dependency resolution: llm_extractinator 0.4.2 imports
 # langchain.globals, which only exists in langchain 0.3.x (1.x removed it and breaks at runtime).
-# Without this line the resolver may pick langchain 1.x and the LLM stage fails at runtime.
 RUN python -m pip install --user "langchain==0.3.25" "langchain-ollama==0.3.3" "langchain-chroma==0.2.3"
 
 # Download the encoder model, tokenizer and metrics
@@ -45,12 +46,8 @@ RUN python download_model.py --model_name joeranbosma/dragon-roberta-large-domai
 COPY --chown=user:user download_metrics.py .
 RUN python download_metrics.py
 
-# Download the LLM used for weak-task extraction (build-time only; runtime is offline).
-# extractinate() runs `ollama pull` at startup, which no-ops when the model is already present.
-# &&-chained on purpose: if the pull fails (e.g. registry unreachable), the build FAILS
-# instead of silently producing an image without model weights that hangs at runtime.
-ENV OLLAMA_MODELS=/opt/app/ollama_models
 # Bake the LLM with retries and a hard verification (ollama list must show it).
+ENV OLLAMA_MODELS=/opt/app/ollama_models
 RUN ollama serve & sleep 12; \
     for i in 1 2 3; do ollama pull gemma2:9b && break; echo "[pull retry $i]"; sleep 20; done; \
     ollama list; \
