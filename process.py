@@ -37,7 +37,10 @@ class DragonSubmission(DragonBaseline):
         # LLM 融合设置（可用环境变量覆盖，便于本地调试）
         self.llm_enabled = os.environ.get("DISABLE_LLM", "0") != "1"
         self.llm_model = os.environ.get("LLM_MODEL", "gemma2:9b")
-        self.llm_num_predict = int(os.environ.get("LLM_NUM_PREDICT", "512"))
+        # 224 tokens 足够容纳简短推理 + JSON 答案；512 会让大任务超出 1h 上限
+        self.llm_num_predict = int(os.environ.get("LLM_NUM_PREDICT", "224"))
+        # λ 调参时验证集最多用多少条（控制 LLM 调用预算）
+        self.llm_tune_max_rows = int(os.environ.get("LLM_TUNE_MAX_ROWS", "40"))
         self._llm_lambda = None  # 验证集上选出的融合权重（编码器权重）
 
     def custom_text_cleaning(self, text: Union[str, List[str]]) -> Union[str, List[str]]:
@@ -91,7 +94,7 @@ class DragonSubmission(DragonBaseline):
     def _llm_workdir(self, task_id: str, split: str) -> Path:
         return Path(self.model_save_dir).parent / "llm" / f"task{task_id}_{split}"
 
-    def _extract_llm(self, task_id: str, df: pd.DataFrame) -> dict:
+    def _extract_llm(self, task_id: str, df: pd.DataFrame, max_rows: int = None) -> dict:
         return llm_fusion.run_llm_extraction(
             task_id=task_id,
             problem_type=self.task.target.problem_type,
@@ -100,6 +103,7 @@ class DragonSubmission(DragonBaseline):
             workdir=self._llm_workdir(task_id, "val" if df is self.df_val else "test"),
             model_name=self.llm_model,
             num_predict=self.llm_num_predict,
+            max_rows=max_rows,
         )
 
     def _predict_encoder_distribution(self, df: pd.DataFrame):
@@ -134,7 +138,7 @@ class DragonSubmission(DragonBaseline):
         uids = self.df_val["uid"].astype(str).tolist()
         y_true = self.df_val.set_index(self.df_val["uid"].astype(str)).loc[uids, label_name]
 
-        llm_val = self._extract_llm(task_id, self.df_val)
+        llm_val = self._extract_llm(task_id, self.df_val, max_rows=self.llm_tune_max_rows)
 
         if self.task.target.problem_type == ProblemType.SINGLE_LABEL_BINARY_CLASSIFICATION:
             enc_val = super().predict(df=self.df_val)

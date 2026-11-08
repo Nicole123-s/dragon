@@ -32,8 +32,15 @@ RUN python download_metrics.py
 
 # Download the LLM used for weak-task extraction (build-time only; runtime is offline).
 # extractinate() runs `ollama pull` at startup, which no-ops when the model is already present.
+# &&-chained on purpose: if the pull fails (e.g. registry unreachable), the build FAILS
+# instead of silently producing an image without model weights that hangs at runtime.
 ENV OLLAMA_MODELS=/opt/app/ollama_models
-RUN ollama serve & sleep 15 && ollama pull gemma2:9b && ollama stop gemma2:9b; pkill ollama; sleep 2; true
+RUN ollama serve & sleep 15 \
+    && ollama pull gemma2:9b \
+    && ollama stop gemma2:9b \
+    && pkill ollama \
+    && sleep 2 \
+    && ls -lh /opt/app/ollama_models/blobs/
 
 # Set the environment variables
 ENV TRANSFORMERS_OFFLINE=1

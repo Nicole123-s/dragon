@@ -6,6 +6,7 @@
 - 逐行校验 LLM 输出（status/取值合法），无效行保留编码器预测
 """
 import json
+import logging
 import os
 import re
 import shutil
@@ -87,6 +88,56 @@ def parse_row(problem_type, row: dict):
     return None
 
 
+def _patch_predictor_concurrency() -> None:
+    """给 extractinate 的 Predictor.predict 注入 max_concurrency（顺序推理在 1h 上限内跑不完大任务）。
+
+    与 llm_extractinator 0.4.2 原版逻辑一致，仅在 chain.batch 的 config 中增加并发度。
+    """
+    from llm_extractinator.callbacks import BatchCallBack
+    from llm_extractinator.predictor import Predictor
+    from llm_extractinator.validator import handle_prediction_failure
+
+    max_concurrency = int(os.environ.get("LLM_MAX_CONCURRENCY", "4"))
+
+    def predict(self, test_data):
+        logger_src = logging.getLogger(__name__)
+        logger_src.info("Starting prediction on test data with %d samples (max_concurrency=%d).", len(test_data), max_concurrency)
+        chain = self.prompt | self.model | self.fixing_parser
+        test_data_processed = [
+            {"input": row[self.input_field]} for _, row in test_data.iterrows()
+        ]
+        callbacks = BatchCallBack(len(test_data_processed))
+        raw_results = chain.batch(
+            test_data_processed,
+            config={"callbacks": [callbacks], "max_concurrency": max_concurrency},
+            return_exceptions=True,
+        )
+        callbacks.progress_bar.close()
+
+        final_results = []
+        failure_counter = 0
+        for input_data, result in zip(test_data_processed, raw_results):
+            if isinstance(result, Exception):
+                final_results.append(
+                    handle_prediction_failure(result, input_data, self.parser_model)
+                )
+                failure_counter += 1
+            else:
+                result_dict = (
+                    result.model_dump() if hasattr(result, "model_dump") else result
+                )
+                result_dict["status"] = "success"
+                final_results.append(result_dict)
+
+        logger_src.info("Prediction completed. Failed predictions: %d", failure_counter)
+        return final_results
+
+    if getattr(Predictor.predict, "_patched_concurrency", False):
+        return
+    predict._patched_concurrency = True
+    Predictor.predict = predict
+
+
 def run_llm_extraction(
     *,
     task_id: str,
@@ -95,7 +146,8 @@ def run_llm_extraction(
     input_name: str,
     workdir: Path,
     model_name: str,
-    num_predict: int = 512,
+    num_predict: int = 224,
+    max_rows: int = None,
 ) -> dict:
     """对给定数据运行零样本 LLM 提取，返回 {uid: 预测值或 None}。
 
@@ -114,6 +166,9 @@ def run_llm_extraction(
         n = int(subset)
         print(f"[llm_fusion] 本地测试模式：仅对前 {n}/{len(df)} 条做 LLM 提取")
         df = df.head(n).copy()
+    if max_rows and len(df) > max_rows:
+        print(f"[llm_fusion] 调参模式：验证集取前 {max_rows}/{len(df)} 条")
+        df = df.head(max_rows).copy()
 
     data = pd.DataFrame({"uid": df["uid"].astype(str).values})
     data["text"] = prepare_llm_text(df, input_name, task_id).values
@@ -123,6 +178,9 @@ def run_llm_extraction(
     if not task_jsons:
         raise FileNotFoundError(f"llm_tasks/ 下找不到 Task{task_id} 的提示词 JSON")
     shutil.copy(task_jsons[0], workdir / "tasks" / task_jsons[0].name)
+
+    _patch_predictor_concurrency()
+    print(f"[llm_fusion] 提取开始：task={task_id} model={model_name} num_predict={num_predict} 条数={len(df)}")
 
     from llm_extractinator import extractinate
 
