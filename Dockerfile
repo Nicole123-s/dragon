@@ -1,7 +1,18 @@
 FROM pytorch/pytorch:2.6.0-cuda12.4-cudnn9-runtime
 
-# Install Ollama (for zero-shot LLM extraction on weak tasks)
-RUN curl -fsSL https://ollama.com/install.sh | sh
+# Install the Ollama server. GC build egress is allowlisted and flaky, so try
+# several sources and VERIFY the binary exists — a failed curl piped to sh
+# exits 0 and would otherwise silently produce an image without ollama.
+RUN set -e; \
+    if curl -fsSL --max-time 180 -o /tmp/ollama_install.sh https://ollama.com/install.sh && sh /tmp/ollama_install.sh; then \
+        echo "ollama installed via ollama.com"; \
+    elif curl -fL --retry 3 --max-time 900 -o /tmp/ollama.tgz https://github.com/ollama/ollama/releases/download/v0.40.14/ollama-linux-amd64.tgz; then \
+        tar xzf /tmp/ollama.tgz -C /usr/local && rm -f /tmp/ollama.tgz && echo "ollama installed via GitHub releases"; \
+    else \
+        curl -fL --retry 3 --max-time 900 -o /tmp/ollama.tgz https://ghfast.top/https://github.com/ollama/ollama/releases/download/v0.40.14/ollama-linux-amd64.tgz && \
+        tar xzf /tmp/ollama.tgz -C /usr/local && rm -f /tmp/ollama.tgz && echo "ollama installed via ghfast mirror"; \
+    fi; \
+    command -v ollama && ollama --version
 
 RUN groupadd -r user && useradd -m --no-log-init -r -g user user
 
@@ -35,12 +46,13 @@ RUN python download_metrics.py
 # &&-chained on purpose: if the pull fails (e.g. registry unreachable), the build FAILS
 # instead of silently producing an image without model weights that hangs at runtime.
 ENV OLLAMA_MODELS=/opt/app/ollama_models
-RUN ollama serve & sleep 15 \
-    && ollama pull gemma2:9b \
-    && ollama stop gemma2:9b \
-    && pkill ollama \
-    && sleep 2 \
-    && ls -lh /opt/app/ollama_models/blobs/
+# Bake the LLM with retries and a hard verification (ollama list must show it).
+RUN ollama serve & sleep 12; \
+    for i in 1 2 3; do ollama pull gemma2:9b && break; echo "[pull retry $i]"; sleep 20; done; \
+    ollama list; \
+    ollama list | grep -q gemma2 || (echo "MODEL PULL FAILED - image must not be used" && exit 1); \
+    ollama stop gemma2:9b || true; pkill ollama || true; sleep 2; \
+    ls -lh /opt/app/ollama_models/blobs/
 
 # Set the environment variables
 ENV TRANSFORMERS_OFFLINE=1
