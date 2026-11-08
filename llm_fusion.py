@@ -170,24 +170,49 @@ def _dump_server_logs(workdir: Path, *, srv_log_path: Path) -> None:
 def _extractinate_child(kwargs: dict, result_queue, log_path: str) -> None:
     """extractinate 的子进程入口（spawn 需要模块级函数）。
 
-    - stdout/stderr 重定向到文件：避免 GC 日志管道阻塞导致整个子进程卡死（v1.2.8/1.2.9 疑似根因之一），
+    - stdout/stderr 重定向到文件：避免 GC 日志管道阻塞导致整个子进程卡死，
       同时完整留证，结束后由父进程打印尾部
     - faulthandler 每 3 分钟把所有线程栈打到 stderr：若再挂，日志里直接看到挂在哪一行
     - 跳过运行时 ollama pull：模型已烤入镜像，pull 是纯网络依赖（GC 出口受限时会挂死）
+    - count_tokens 替换为纯 Python 估算：tiktoken>=0.13 换新缓存键，镜像里旧键缓存不命中
+      会联网下载，GC 出口代理对非白名单域名挂起不放 → 提取阶段死锁（v1.2.8/1.2.9/1.3.1
+      三次 40 分钟超时的共同根因）。token 计数只用于长短切分与 num_ctx，精度要求低。
+    - 全局 socket 超时兜底：任何其他隐藏的网络依赖最多卡 30 秒就报错，不会永久挂死
     """
     import faulthandler
+    import socket
     import sys
+    from pathlib import Path
+
+    socket.setdefaulttimeout(30)
+
+    # 若容器/系统带代理环境变量，确保 ollama 的 localhost 请求不被代理拦截
+    os.environ["NO_PROXY"] = "localhost,127.0.0.1,::1"
+    os.environ["no_proxy"] = "localhost,127.0.0.1,::1"
 
     sys.stdout = open(log_path, "w", encoding="utf-8", errors="replace", buffering=1)
     sys.stderr = open(
-        str(log_path) + ".err", "w", encoding="utf-8", errors="replace", buffering=1
+        Path(log_path).with_name("child_stderr.log"),
+        "w",
+        encoding="utf-8",
+        errors="replace",
+        buffering=1,
     )
     faulthandler.dump_traceback_later(180, repeat=True, file=sys.stderr)
     print("[llm_fusion.child] 子进程启动", flush=True)
     try:
         import logging as _logging
 
+        from llm_extractinator.data_loader import DataLoader
         from llm_extractinator.ollama_server import OllamaServerManager
+
+        def _fast_count_tokens(self, text, model_name="cl100k_base"):
+            try:
+                return int(len(str(text).split()) * 1.3)
+            except Exception:
+                return 0
+
+        DataLoader.count_tokens = _fast_count_tokens
 
         def _skip_pull(self, model_name):
             _logging.getLogger(__name__).info(
