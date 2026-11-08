@@ -88,11 +88,22 @@ def parse_row(problem_type, row: dict):
     return None
 
 
+def _port_free(host="127.0.0.1", port=11434) -> bool:
+    import socket
+
+    s = socket.socket()
+    try:
+        s.bind((host, port))
+        s.close()
+        return True
+    except OSError:
+        return False
+
+
 def _ollama_selfcheck(*, workdir: Path, model_name: str) -> None:
     """环境自检：ollama 可用性 + 一次真实生成计时 + 服务端日志（GPU/CPU 判别）。
 
-    提取前运行：起服务 → 单次生成 → 打印耗时与服务日志尾部。
-    服务保持运行（extractinate 会再启动一个实例，端口占用无妨，请求仍路由到本服务）。
+    自检结束后关闭自起的服务并等待端口释放，让 extractinate 干净地启动自己的服务。
     """
     import shutil as _shutil
     import subprocess as _sp
@@ -125,6 +136,43 @@ def _ollama_selfcheck(*, workdir: Path, model_name: str) -> None:
         print("----- end -----")
     except Exception:
         pass
+    # 关闭自检服务，等待端口释放（最多 60s）
+    srv.terminate()
+    try:
+        srv.wait(timeout=10)
+    except Exception:
+        srv.kill()
+    for _ in range(60):
+        if _port_free():
+            break
+        _time.sleep(1)
+    print(f"[llm_fusion] SELFCHECK 服务已关闭，端口释放: {_port_free()}")
+
+
+def _dump_server_logs(workdir: Path, *, srv_log_path: Path) -> None:
+    """打印自检服务与 extractinate 服务的日志尾部（提取后可见请求时序）。"""
+    for name, path in [
+        ("selfcheck", srv_log_path),
+        ("extraction", Path(workdir) / "output" / "logs" / "ollama_server.log"),
+    ]:
+        try:
+            tail = open(path, errors="replace").read()[-1500:]
+            print(f"----- ollama {name} server log tail -----")
+            print(tail)
+            print("----- end -----")
+        except Exception:
+            pass
+
+
+def _extractinate_child(kwargs: dict, result_queue) -> None:
+    """extractinate 的子进程入口（spawn 需要模块级函数）。"""
+    try:
+        from llm_extractinator import extractinate
+
+        extractinate(**kwargs)
+        result_queue.put(("ok", None))
+    except Exception as e:  # noqa: BLE001
+        result_queue.put(("err", repr(e)))
 
 
 def _patch_predictor_concurrency() -> None:
@@ -222,9 +270,7 @@ def run_llm_extraction(
     _patch_predictor_concurrency()
     print(f"[llm_fusion] 提取开始：task={task_id} model={model_name} num_predict={num_predict} 条数={len(df)}")
 
-    from llm_extractinator import extractinate
-
-    extractinate(
+    kwargs = dict(
         task_id=int(task_id),
         model_name=model_name,
         num_examples=0,
@@ -242,6 +288,37 @@ def run_llm_extraction(
         seed=42,
         overwrite=True,
     )
+
+    # 限时运行：超时直接终止并清理，让调用方回退编码器（避免容器被平台整体杀掉、零产出）
+    import multiprocessing as mp
+    import subprocess as sp
+    import time as _time
+
+    budget_min = float(os.environ.get("LLM_TIME_BUDGET_MIN", "40"))
+    ctx = mp.get_context("spawn")
+    result_queue = ctx.Queue()
+    proc = ctx.Process(target=_extractinate_child, args=(kwargs, result_queue))
+    proc.start()
+    proc.join(timeout=int(budget_min * 60))
+    status, err = ("err", "child exited without result"), None
+    if proc.is_alive():
+        print(f"[llm_fusion] 提取超时（>{budget_min:.0f} 分钟），终止 LLM 子进程并回退编码器")
+        proc.terminate()
+        proc.join(timeout=30)
+        if proc.is_alive():
+            proc.kill()
+        sp.run(["pkill", "-f", "ollama"], capture_output=True)
+        _dump_server_logs(workdir, srv_log_path=workdir / "ollama_selfcheck.log")
+        raise RuntimeError(f"LLM extraction timed out after {budget_min:.0f} min")
+    try:
+        status, err = result_queue.get_nowait()
+    except Exception:
+        pass
+    if status != "ok":
+        _dump_server_logs(workdir, srv_log_path=workdir / "ollama_selfcheck.log")
+        raise RuntimeError(f"extractinate failed: {err}")
+
+    _dump_server_logs(workdir, srv_log_path=workdir / "ollama_selfcheck.log")
 
     # extractinate 内部吞异常，这里以产物文件为准做硬校验
     pred_files = sorted(workdir.glob("output/run/*/nlp-predictions-dataset.json"))
