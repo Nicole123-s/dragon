@@ -1,16 +1,20 @@
 FROM pytorch/pytorch:2.6.0-cuda12.4-cudnn9-runtime
 
+# The pytorch runtime image ships WITHOUT curl/wget. This line is easy to miss
+# and fatal: `curl | sh` then no-ops with exit 0, producing an image that
+# silently lacks ollama. (Same install line as the organizers' LLM template.)
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends curl wget ca-certificates \
+    && rm -rf /var/lib/apt/lists/*
+
 # Install the Ollama server. GC build egress is allowlisted and flaky, so try
-# several sources and VERIFY the binary exists — a failed curl piped to sh
-# exits 0 and would otherwise silently produce an image without ollama.
+# several sources and VERIFY the binary exists.
 RUN set -e; \
     if curl -fsSL --max-time 180 -o /tmp/ollama_install.sh https://ollama.com/install.sh && sh /tmp/ollama_install.sh; then \
         echo "ollama installed via ollama.com"; \
-    elif curl -fL --retry 3 --max-time 900 -o /tmp/ollama.tgz https://github.com/ollama/ollama/releases/download/v0.40.14/ollama-linux-amd64.tgz; then \
-        tar xzf /tmp/ollama.tgz -C /usr/local && rm -f /tmp/ollama.tgz && echo "ollama installed via GitHub releases"; \
     else \
-        curl -fL --retry 3 --max-time 900 -o /tmp/ollama.tgz https://ghfast.top/https://github.com/ollama/ollama/releases/download/v0.40.14/ollama-linux-amd64.tgz && \
-        tar xzf /tmp/ollama.tgz -C /usr/local && rm -f /tmp/ollama.tgz && echo "ollama installed via ghfast mirror"; \
+        curl -fL --retry 3 --max-time 900 -o /tmp/ollama.tgz https://github.com/ollama/ollama/releases/download/v0.40.14/ollama-linux-amd64.tgz && \
+        tar xzf /tmp/ollama.tgz -C /usr/local && rm -f /tmp/ollama.tgz && echo "ollama installed via GitHub releases"; \
     fi; \
     command -v ollama && ollama --version
 
