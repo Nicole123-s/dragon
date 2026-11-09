@@ -124,8 +124,13 @@ class DragonSubmission(DragonBaseline):
         probs = []
         with torch.no_grad():
             for _, row in df.iterrows():
+                # NLI 任务输入是句对列表：必须与训练一致拼成单串（训练用 </s> 连接），
+                # 直接传列表会把两句当两条样本批处理（且慢分词器不 padding 会直接报错）
+                text = row[self.task.input_name]
+                if isinstance(text, (list, tuple, np.ndarray)):
+                    text = "</s>".join(str(t) for t in text)
                 inputs = tokenizer(
-                    row[self.task.input_name], return_tensors="pt", truncation=True
+                    text, return_tensors="pt", truncation=True, padding=True
                 ).to(self.device)
                 logits = model(**inputs).logits.detach().cpu().numpy()[0]
                 probs.append(softmax(logits))
